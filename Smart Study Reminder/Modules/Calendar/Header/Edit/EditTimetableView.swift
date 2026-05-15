@@ -13,6 +13,7 @@ struct EditTimetableView: View {
     let schedule: ClassSchedule
     
     @Query(sort: \Subject.name) private var subjects: [Subject]
+    @Query(sort: \ClassSchedule.startTime, order: .forward) private var classSchedules: [ClassSchedule]
     
     @State private var subjectName: String
     @State private var selectedWeekday: Weekday
@@ -22,8 +23,11 @@ struct EditTimetableView: View {
     @State private var note: String
     
     @State private var showInvalidTimeAlert = false
+    @State private var invalidTimeMessage = ""
     @State private var showEmptySubjectAlert = false
     @State private var showDeleteConfirmation = false
+    @State private var showTimeConflictAlert = false
+    @State private var timeConflictMessage = ""
     
     init(schedule: ClassSchedule) {
         self.schedule = schedule
@@ -38,7 +42,8 @@ struct EditTimetableView: View {
     
     private var canSave: Bool {
         !subjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        endTime > startTime
+        TimetableTimeValidator.isStartTimeAllowed(startTime) &&
+        TimetableTimeValidator.isStartBeforeEnd(startTime, endTime)
     }
     
     var body: some View {
@@ -65,14 +70,25 @@ struct EditTimetableView: View {
                     DatePicker(
                         "Giờ bắt đầu",
                         selection: $startTime,
+                        in: TimetableTimeValidator.allowedStartTimeRange(for: startTime),
                         displayedComponents: .hourAndMinute
                     )
+                    .onChange(of: startTime) { _, newValue in
+                        updateStartTime(newValue)
+                    }
                     
                     DatePicker(
                         "Giờ kết thúc",
                         selection: $endTime,
                         displayedComponents: .hourAndMinute
                     )
+                    .onChange(of: endTime) { _, newValue in
+                        updateEndTime(newValue)
+                    }
+                    
+                    Text("Giờ bắt đầu chỉ được chọn từ 07:00 đến 22:00.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } header: {
                     Text("Thời gian học")
                 }
@@ -103,6 +119,9 @@ struct EditTimetableView: View {
         }
         .navigationTitle("Chỉnh sửa lịch học")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            normalizeTimesIfNeeded()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Lưu") {
@@ -120,7 +139,12 @@ struct EditTimetableView: View {
         .alert("Thời gian không hợp lệ", isPresented: $showInvalidTimeAlert) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Giờ kết thúc phải sau giờ bắt đầu.")
+            Text(invalidTimeMessage)
+        }
+        .alert("Lịch học bị trùng", isPresented: $showTimeConflictAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(timeConflictMessage)
         }
         .confirmationDialog(
             "Bạn có chắc muốn xóa lịch học này?",
@@ -143,8 +167,17 @@ struct EditTimetableView: View {
             return
         }
         
-        guard endTime > startTime else {
-            showInvalidTimeAlert = true
+        guard validateTime() else {
+            return
+        }
+        
+        if let conflictSchedule = findTimeConflict(
+            weekday: selectedWeekday,
+            startTime: startTime,
+            endTime: endTime
+        ) {
+            timeConflictMessage = conflictMessage(for: conflictSchedule)
+            showTimeConflictAlert = true
             return
         }
         
@@ -163,6 +196,78 @@ struct EditTimetableView: View {
         } catch {
             print("Failed to update class schedule:", error.localizedDescription)
         }
+    }
+    
+    private func validateTime() -> Bool {
+        guard TimetableTimeValidator.isStartTimeAllowed(startTime) else {
+            invalidTimeMessage = "Giờ bắt đầu chỉ được chọn từ 07:00 đến 22:00."
+            showInvalidTimeAlert = true
+            return false
+        }
+        
+        guard TimetableTimeValidator.isStartBeforeEnd(startTime, endTime) else {
+            invalidTimeMessage = "Giờ bắt đầu phải trước giờ kết thúc."
+            showInvalidTimeAlert = true
+            return false
+        }
+        
+        return true
+    }
+    
+    private func findTimeConflict(
+        weekday: Weekday,
+        startTime: Date,
+        endTime: Date
+    ) -> ClassSchedule? {
+        classSchedules.first { existingSchedule in
+            guard existingSchedule !== schedule else {
+                return false
+            }
+            
+            guard existingSchedule.weekday == weekday.rawValue else {
+                return false
+            }
+            
+            return TimetableTimeValidator.isOverlapping(
+                startTime,
+                endTime,
+                existingSchedule.startTime,
+                existingSchedule.endTime
+            )
+        }
+    }
+    
+    private func conflictMessage(for schedule: ClassSchedule) -> String {
+        "Lịch này bị trùng với \(schedule.subject.name) vào \(selectedWeekday.title), từ \(formatTime(schedule.startTime)) đến \(formatTime(schedule.endTime))."
+    }
+    
+    private func normalizeTimesIfNeeded() {
+        startTime = TimetableTimeValidator.clampedStartTime(startTime)
+        
+        if !TimetableTimeValidator.isStartBeforeEnd(startTime, endTime) {
+            endTime = TimetableTimeValidator.suggestedEndTime(after: startTime)
+        }
+    }
+    
+    private func updateStartTime(_ newValue: Date) {
+        let clampedStartTime = TimetableTimeValidator.clampedStartTime(newValue)
+        
+        if startTime != clampedStartTime {
+            startTime = clampedStartTime
+        }
+        
+        if !TimetableTimeValidator.isStartBeforeEnd(startTime, endTime) {
+            endTime = TimetableTimeValidator.suggestedEndTime(after: startTime)
+        }
+    }
+    
+    private func updateEndTime(_ newValue: Date) {
+        guard TimetableTimeValidator.isStartBeforeEnd(startTime, newValue) else {
+            endTime = TimetableTimeValidator.suggestedEndTime(after: startTime)
+            return
+        }
+        
+        endTime = newValue
     }
     
     private func deleteClassSchedule() {
@@ -187,5 +292,14 @@ struct EditTimetableView: View {
         let newSubject = Subject(name: name)
         modelContext.insert(newSubject)
         return newSubject
+    }
+    
+    private func formatTime(_ date: Date) -> String {
+        date.formatted(
+            .dateTime
+                .locale(Locale(identifier: "vi_VN"))
+                .hour()
+                .minute()
+        )
     }
 }

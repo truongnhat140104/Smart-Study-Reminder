@@ -17,7 +17,6 @@ struct DayScheduleListView: View {
     @State private var isShowingEditView = false
     
     @State private var scheduleToDelete: ClassSchedule?
-    @State private var showDeleteConfirmation = false
     
     private var daySchedules: [ClassSchedule] {
         schedules
@@ -44,7 +43,6 @@ struct DayScheduleListView: View {
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
                                         scheduleToDelete = schedule
-                                        showDeleteConfirmation = true
                                     } label: {
                                         Label("Xóa", systemImage: "trash")
                                     }
@@ -71,19 +69,6 @@ struct DayScheduleListView: View {
             if let scheduleToEdit {
                 EditTimetableView(schedule: scheduleToEdit)
             }
-        }
-        .confirmationDialog(
-            "Bạn có chắc muốn xóa lịch học này?",
-            isPresented: $showDeleteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Xóa lịch học", role: .destructive) {
-                deleteSelectedSchedule()
-            }
-            
-            Button("Hủy", role: .cancel) {}
-        } message: {
-            Text(scheduleToDelete?.subject.name ?? "Lịch học này sẽ bị xóa khỏi thời khóa biểu.")
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

@@ -116,9 +116,42 @@ struct TasksMonthCalendarCard: View {
     private func tasksForDate(_ date: Date) -> [TaskItem] {
         tasks
             .filter { task in
-                calendar.isDate(task.startAt, inSameDayAs: date)
+                taskOccurs(task, on: date)
             }
             .sorted { $0.startAt < $1.startAt }
+    }
+    
+    private func taskOccurs(_ task: TaskItem, on date: Date) -> Bool {
+        let targetDay = calendar.startOfDay(for: date)
+        let taskStartDay = calendar.startOfDay(for: task.startAt)
+        
+        guard targetDay >= taskStartDay else {
+            return false
+        }
+        
+        switch task.repeatRule {
+        case .none:
+            return calendar.isDate(task.startAt, inSameDayAs: date)
+            
+        case .daily:
+            return true
+            
+        case .weekly:
+            let taskWeekday = calendar.component(.weekday, from: task.startAt)
+            let targetWeekday = calendar.component(.weekday, from: date)
+            return taskWeekday == targetWeekday
+            
+        case .monthly:
+            let taskDay = calendar.component(.day, from: task.startAt)
+            let targetDayNumber = calendar.component(.day, from: date)
+            return taskDay == targetDayNumber
+            
+        case .yearly:
+            let taskComponents = calendar.dateComponents([.day, .month], from: task.startAt)
+            let targetComponents = calendar.dateComponents([.day, .month], from: date)
+            return taskComponents.day == targetComponents.day
+                && taskComponents.month == targetComponents.month
+        }
     }
     
     private func changeMonth(by value: Int) {

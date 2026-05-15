@@ -14,6 +14,9 @@ struct ScanTimetableCard: View {
     @Query(sort: \Subject.name)
     private var subjects: [Subject]
     
+    @Query(sort: \ClassSchedule.startTime, order: .forward)
+    private var classSchedules: [ClassSchedule]
+    
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedImage: UIImage?
     
@@ -102,7 +105,7 @@ struct ScanTimetableCard: View {
                 Text("Quét thời khóa biểu")
                     .font(.headline)
                 
-                Text("OCR ảnh TKB, Groq lọc lịch, bạn kiểm tra rồi lưu")
+                Text("OCR ảnh TKB, AI local lọc lịch, bạn kiểm tra rồi lưu")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -248,14 +251,31 @@ struct ScanTimetableCard: View {
             DatePicker(
                 "Bắt đầu",
                 selection: draft.startTime,
+                in: ScanTimetableTimeValidator.allowedStartTimeRange(for: draft.wrappedValue.startTime),
                 displayedComponents: .hourAndMinute
             )
+            .onChange(of: draft.wrappedValue.startTime) { _, newValue in
+                updateDraftStartTime(draft, newValue)
+            }
             
             DatePicker(
                 "Kết thúc",
                 selection: draft.endTime,
                 displayedComponents: .hourAndMinute
             )
+            .onChange(of: draft.wrappedValue.endTime) { _, newValue in
+                updateDraftEndTime(draft, newValue)
+            }
+            
+            Text("Giờ bắt đầu chỉ được chọn từ 07:00 đến 22:00.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            
+            if let warningMessage = draftWarningMessage(for: draft.wrappedValue) {
+                Label(warningMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             
             TextField("Phòng học", text: draft.room)
             
@@ -327,55 +347,119 @@ struct ScanTimetableCard: View {
         successMessage = nil
         recognizedText = ""
         scheduleDrafts = []
-        
+
         do {
             let text = try await OCRService.extractText(from: image)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            
+
             guard !text.isEmpty else {
                 errorMessage = "Không đọc được chữ trong ảnh. Bạn thử chụp rõ hơn, đủ sáng hơn nhé."
                 isProcessing = false
                 return
             }
-            
+
             recognizedText = text
+
+            let response = try await TimetableAIService.shared.parseTimetable(from: text)
             
-            let drafts = try await GroqTimetableParserService.shared.parseTimetable(from: text)
+
+            print("===== AI RAW OUTPUT =====")
+            print(response.rawOutput ?? "nil")
+
+            print("===== AI ERROR =====")
+            print(response.error ?? "nil")
+
+            print("===== AI ITEMS =====")
+            print(response.items)
+
+            let drafts = response.items.compactMap { draft(from: $0) }
+
+            print("===== VALID DRAFTS =====")
+            print(drafts)
             
             if drafts.isEmpty {
-                errorMessage = "Đã đọc được chữ nhưng Groq chưa tìm thấy lịch học hợp lệ."
+                errorMessage = """
+                Đã đọc được chữ nhưng AI chưa tìm thấy lịch học hợp lệ.
+
+                Bạn mở “Xem text OCR gốc” để kiểm tra text OCR có đủ tên môn, thứ, giờ học không.
+                """
             } else {
-                scheduleDrafts = drafts
+                scheduleDrafts = drafts.map { normalizedDraft($0) }
                 successMessage = "Đã nhận diện \(drafts.count) lịch học. Bạn kiểm tra lại rồi bấm lưu."
             }
         } catch {
             errorMessage = friendlyErrorMessage(from: error)
         }
-        
+
         isProcessing = false
     }
     
+    private func draft(from item: TimetableAIItem) -> ScannedScheduleDraft? {
+        let subjectName = item.subjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !subjectName.isEmpty else {
+            return nil
+        }
+
+        guard let startTime = dateFromTimeString(item.startTime),
+              let endTime = dateFromTimeString(item.endTime) else {
+            return nil
+        }
+
+        return ScannedScheduleDraft(
+            subjectName: subjectName,
+            weekday: item.weekday,
+            startTime: startTime,
+            endTime: endTime,
+            room: item.room?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            note: item.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        )
+    }
+
+    private func dateFromTimeString(_ timeString: String) -> Date? {
+        let normalized = timeString
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "h", with: ":")
+            .replacingOccurrences(of: "g", with: ":")
+
+        let parts = normalized.split(separator: ":")
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+
+        var components = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        components.hour = hour
+        components.minute = minute
+        components.second = 0
+
+        return Calendar.current.date(from: components)
+    }
+
     @MainActor
     private func saveScheduleDrafts() {
+        guard !scheduleDrafts.isEmpty else {
+            errorMessage = "Chưa có lịch để lưu."
+            return
+        }
+        
+        if let validationMessage = validateDraftsBeforeSaving() {
+            errorMessage = validationMessage
+            successMessage = nil
+            return
+        }
+        
         var createdCount = 0
         
         for draft in scheduleDrafts {
             let subjectName = draft.subjectName.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            guard !subjectName.isEmpty else {
-                continue
-            }
-            
-            guard (1...7).contains(draft.weekday),
-                  draft.startTime < draft.endTime else {
-                continue
-            }
-            
             let subject = findOrCreateSubject(named: subjectName)
             
             let schedule = ClassSchedule(
                 weekday: draft.weekday,
-                startTime: draft.startTime,
+                startTime: ScanTimetableTimeValidator.clampedStartTime(draft.startTime),
                 endTime: draft.endTime,
                 room: cleanedOptional(draft.room),
                 note: cleanedOptional(draft.note),
@@ -388,17 +472,189 @@ struct ScanTimetableCard: View {
         }
         
         do {
-            if createdCount > 0 {
-                try modelContext.save()
-                scheduleDrafts = []
-                successMessage = "Đã lưu \(createdCount) lịch học vào thời khóa biểu."
-                errorMessage = nil
-            } else {
-                errorMessage = "Chưa có lịch hợp lệ để lưu."
-            }
+            try modelContext.save()
+            scheduleDrafts = []
+            successMessage = "Đã lưu \(createdCount) lịch học vào thời khóa biểu."
+            errorMessage = nil
         } catch {
             errorMessage = "Không lưu được lịch học: \(error.localizedDescription)"
         }
+    }
+    
+    private func normalizedDraft(_ draft: ScannedScheduleDraft) -> ScannedScheduleDraft {
+        var normalizedDraft = draft
+        normalizedDraft.startTime = ScanTimetableTimeValidator.clampedStartTime(draft.startTime)
+        
+        if !ScanTimetableTimeValidator.isStartBeforeEnd(
+            normalizedDraft.startTime,
+            normalizedDraft.endTime
+        ) {
+            normalizedDraft.endTime = ScanTimetableTimeValidator.suggestedEndTime(
+                after: normalizedDraft.startTime
+            )
+        }
+        
+        return normalizedDraft
+    }
+    
+    private func updateDraftStartTime(_ draft: Binding<ScannedScheduleDraft>, _ newValue: Date) {
+        let clampedStartTime = ScanTimetableTimeValidator.clampedStartTime(newValue)
+        
+        if draft.wrappedValue.startTime != clampedStartTime {
+            draft.wrappedValue.startTime = clampedStartTime
+        }
+        
+        if !ScanTimetableTimeValidator.isStartBeforeEnd(
+            draft.wrappedValue.startTime,
+            draft.wrappedValue.endTime
+        ) {
+            draft.wrappedValue.endTime = ScanTimetableTimeValidator.suggestedEndTime(
+                after: draft.wrappedValue.startTime
+            )
+        }
+    }
+    
+    private func updateDraftEndTime(_ draft: Binding<ScannedScheduleDraft>, _ newValue: Date) {
+        guard ScanTimetableTimeValidator.isStartBeforeEnd(
+            draft.wrappedValue.startTime,
+            newValue
+        ) else {
+            draft.wrappedValue.endTime = ScanTimetableTimeValidator.suggestedEndTime(
+                after: draft.wrappedValue.startTime
+            )
+            return
+        }
+        
+        draft.wrappedValue.endTime = newValue
+    }
+    
+    private func validateDraftsBeforeSaving() -> String? {
+        for (index, draft) in scheduleDrafts.enumerated() {
+            if let message = validationMessage(for: draft, index: index) {
+                return message
+            }
+        }
+        
+        return duplicatedDraftConflictMessage()
+    }
+    
+    private func validationMessage(for draft: ScannedScheduleDraft, index: Int) -> String? {
+        let prefix = "Dòng \(index + 1): "
+        let subjectName = draft.subjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        guard !subjectName.isEmpty else {
+            return prefix + "vui lòng nhập tên môn học."
+        }
+        
+        guard (1...7).contains(draft.weekday) else {
+            return prefix + "thứ không hợp lệ."
+        }
+        
+        guard ScanTimetableTimeValidator.isStartTimeAllowed(draft.startTime) else {
+            return prefix + "giờ bắt đầu chỉ được chọn từ 07:00 đến 22:00."
+        }
+        
+        guard ScanTimetableTimeValidator.isStartBeforeEnd(draft.startTime, draft.endTime) else {
+            return prefix + "giờ bắt đầu phải trước giờ kết thúc."
+        }
+        
+        if let conflictSchedule = findExistingTimeConflict(for: draft) {
+            return prefix + conflictMessage(
+                subjectName: subjectName,
+                weekday: draft.weekday,
+                conflictSubjectName: conflictSchedule.subject.name,
+                conflictStartTime: conflictSchedule.startTime,
+                conflictEndTime: conflictSchedule.endTime
+            )
+        }
+        
+        return nil
+    }
+    
+    private func draftWarningMessage(for draft: ScannedScheduleDraft) -> String? {
+        guard (1...7).contains(draft.weekday) else {
+            return "Thứ không hợp lệ."
+        }
+        
+        guard ScanTimetableTimeValidator.isStartTimeAllowed(draft.startTime) else {
+            return "Giờ bắt đầu chỉ được chọn từ 07:00 đến 22:00."
+        }
+        
+        guard ScanTimetableTimeValidator.isStartBeforeEnd(draft.startTime, draft.endTime) else {
+            return "Giờ bắt đầu phải trước giờ kết thúc."
+        }
+        
+        if let conflictSchedule = findExistingTimeConflict(for: draft) {
+            return "Trùng với \(conflictSchedule.subject.name), \(formatTime(conflictSchedule.startTime)) - \(formatTime(conflictSchedule.endTime))."
+        }
+        
+        return nil
+    }
+    
+    private func findExistingTimeConflict(for draft: ScannedScheduleDraft) -> ClassSchedule? {
+        classSchedules.first { existingSchedule in
+            guard existingSchedule.weekday == draft.weekday else {
+                return false
+            }
+            
+            return ScanTimetableTimeValidator.isOverlapping(
+                draft.startTime,
+                draft.endTime,
+                existingSchedule.startTime,
+                existingSchedule.endTime
+            )
+        }
+    }
+    
+    private func duplicatedDraftConflictMessage() -> String? {
+        guard scheduleDrafts.count > 1 else {
+            return nil
+        }
+        
+        for firstIndex in scheduleDrafts.indices {
+            for secondIndex in scheduleDrafts.indices where secondIndex > firstIndex {
+                let firstDraft = scheduleDrafts[firstIndex]
+                let secondDraft = scheduleDrafts[secondIndex]
+                
+                guard firstDraft.weekday == secondDraft.weekday else {
+                    continue
+                }
+                
+                if ScanTimetableTimeValidator.isOverlapping(
+                    firstDraft.startTime,
+                    firstDraft.endTime,
+                    secondDraft.startTime,
+                    secondDraft.endTime
+                ) {
+                    return "Dòng \(firstIndex + 1) bị trùng thời gian với dòng \(secondIndex + 1) vào \(weekdayTitle(firstDraft.weekday))."
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    private func conflictMessage(
+        subjectName: String,
+        weekday: Int,
+        conflictSubjectName: String,
+        conflictStartTime: Date,
+        conflictEndTime: Date
+    ) -> String {
+        "Lịch \(subjectName) bị trùng với \(conflictSubjectName) vào \(weekdayTitle(weekday)), từ \(formatTime(conflictStartTime)) đến \(formatTime(conflictEndTime))."
+    }
+    
+    private func weekdayTitle(_ weekday: Int) -> String {
+        weekdayOptions.first { $0.value == weekday }?.title ?? "Thứ không rõ"
+    }
+    
+    private func formatTime(_ date: Date) -> String {
+        date.formatted(
+            .dateTime
+                .locale(Locale(identifier: "vi_VN"))
+                .hour()
+                .minute()
+        )
     }
     
     private func findOrCreateSubject(named name: String) -> Subject {
@@ -423,22 +679,30 @@ struct ScanTimetableCard: View {
     private func friendlyErrorMessage(from error: Error) -> String {
         let message = error.localizedDescription.lowercased()
         
+        if message.contains("could not connect")
+            || message.contains("connection refused")
+            || message.contains("offline")
+            || message.contains("network")
+            || message.contains("cannot connect") {
+            return "Không kết nối được AI server. Hãy chạy FastAPI server và kiểm tra endpoint trong TimetableAIService."
+        }
+        
         if message.contains("401")
             || message.contains("api key")
             || message.contains("unauthorized") {
-            return "Groq API key chưa hợp lệ. Bạn kiểm tra lại GroqConfig nhé."
+            return "AI server chưa phản hồi hợp lệ. Bạn kiểm tra backend hoặc endpoint nhé."
         }
         
         if message.contains("429")
             || message.contains("rate limit")
             || message.contains("too many requests") {
-            return "Groq đang giới hạn lượt gọi. Bạn thử lại sau một lát nhé."
+            return "AI server đang giới hạn hoặc quá tải. Bạn thử lại sau một lát nhé."
         }
         
         if message.contains("503")
             || message.contains("unavailable")
             || message.contains("overloaded") {
-            return "AI đang quá tải tạm thời. Bạn thử lại sau vài giây nhé."
+            return "AI server đang quá tải tạm thời. Bạn thử lại sau vài giây nhé."
         }
         
         if message.contains("json")
@@ -451,6 +715,78 @@ struct ScanTimetableCard: View {
     }
 }
 
+private enum ScanTimetableTimeValidator {
+    private static let calendar = Calendar.current
+    private static let earliestStartMinute = 7 * 60
+    private static let latestStartMinute = 22 * 60
+    
+    static func allowedStartTimeRange(for date: Date) -> ClosedRange<Date> {
+        let lowerBound = Self.date(onSameDayAs: date, minuteOfDay: earliestStartMinute)
+        let upperBound = Self.date(onSameDayAs: date, minuteOfDay: latestStartMinute)
+        return lowerBound...upperBound
+    }
+    
+    static func isStartTimeAllowed(_ date: Date) -> Bool {
+        (earliestStartMinute...latestStartMinute).contains(minuteOfDay(date))
+    }
+    
+    static func isStartBeforeEnd(_ startTime: Date, _ endTime: Date) -> Bool {
+        minuteOfDay(startTime) < minuteOfDay(endTime)
+    }
+    
+    static func isOverlapping(
+        _ firstStartTime: Date,
+        _ firstEndTime: Date,
+        _ secondStartTime: Date,
+        _ secondEndTime: Date
+    ) -> Bool {
+        let firstStart = minuteOfDay(firstStartTime)
+        let firstEnd = minuteOfDay(firstEndTime)
+        let secondStart = minuteOfDay(secondStartTime)
+        let secondEnd = minuteOfDay(secondEndTime)
+        
+        return firstStart < secondEnd && secondStart < firstEnd
+    }
+    
+    static func clampedStartTime(_ date: Date) -> Date {
+        let currentMinute = minuteOfDay(date)
+        
+        if currentMinute < earliestStartMinute {
+            return Self.date(onSameDayAs: date, minuteOfDay: earliestStartMinute)
+        }
+        
+        if currentMinute > latestStartMinute {
+            return Self.date(onSameDayAs: date, minuteOfDay: latestStartMinute)
+        }
+        
+        return date
+    }
+    
+    static func suggestedEndTime(after startTime: Date) -> Date {
+        let startMinute = minuteOfDay(startTime)
+        let suggestedEndMinute = min(startMinute + 60, 23 * 60 + 59)
+        return Self.date(onSameDayAs: startTime, minuteOfDay: suggestedEndMinute)
+    }
+    
+    static func minuteOfDay(_ date: Date) -> Int {
+        let components = calendar.dateComponents([.hour, .minute], from: date)
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+    
+    static func date(onSameDayAs date: Date, minuteOfDay: Int) -> Date {
+        let safeMinuteOfDay = max(0, min(minuteOfDay, 23 * 60 + 59))
+        let hour = safeMinuteOfDay / 60
+        let minute = safeMinuteOfDay % 60
+        
+        return calendar.date(
+            bySettingHour: hour,
+            minute: minute,
+            second: 0,
+            of: date
+        ) ?? date
+    }
+}
+
 private enum ScanTimetableError: LocalizedError {
     case invalidImage
     
@@ -460,9 +796,4 @@ private enum ScanTimetableError: LocalizedError {
             return "Không đọc được ảnh đã chọn."
         }
     }
-}
-
-#Preview {
-    ScanTimetableCard()
-        .modelContainer(for: AppModelContainer.models)
 }

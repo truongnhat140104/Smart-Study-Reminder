@@ -45,25 +45,11 @@ struct TaskManageRowView: View {
             .foregroundStyle(.secondary)
             
             
-            if let reminderAt = task.reminderAt {
-                let dateText = reminderAt.formatted(
-                        .dateTime
-                            .locale(viLocale)
-                            .day()
-                            .month()
-                            .year()
-                    )
-
-                    let timeText = reminderAt.formatted(
-                        .dateTime
-                            .locale(viLocale)
-                            .hour()
-                            .minute()
-                    )
+            if let reminderOffsetMinutes = task.reminderOffsetMinutes {
                 HStack(){
                     Image(systemName: "bell")
                     
-                    Text("Hẹn nhắc vào \(timeText) ngày \(dateText)")
+                    Text(reminderText(from: reminderOffsetMinutes))
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -121,5 +107,24 @@ struct TaskManageRowView: View {
         )
         
         return "\(dateText) lúc \(startTime) - \(endTime)"
+    }
+    
+    private func reminderText(from minutes: Int) -> String {
+        switch minutes {
+        case 0:
+            return "Nhắc đúng giờ"
+        case 1..<60:
+            return "Nhắc trước \(minutes) phút"
+        case 60:
+            return "Nhắc trước 1 giờ"
+        case 61..<1440 where minutes % 60 == 0:
+            return "Nhắc trước \(minutes / 60) giờ"
+        case 1440:
+            return "Nhắc trước 1 ngày"
+        case 1441... where minutes % 1440 == 0:
+            return "Nhắc trước \(minutes / 1440) ngày"
+        default:
+            return "Nhắc trước \(minutes) phút"
+        }
     }
 }

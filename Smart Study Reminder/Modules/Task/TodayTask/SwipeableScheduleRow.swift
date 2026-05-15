@@ -21,7 +21,7 @@ struct SwipeableScheduleRow: View {
             detail: task.detail,
             time: task.scheduleTimeText,
             icon: task.scheduleIconName,
-            reminder: task.reminderAt,
+            reminderOffsetMinutes: task.reminderOffsetMinutes,
             isDone: task.status == .done,
             priority: task.priority.title
         )

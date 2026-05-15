@@ -59,6 +59,31 @@ enum TaskPriority: String, Codable, CaseIterable, Hashable {
     }
 }
 
+enum TaskRepeatRule: String, Codable, CaseIterable, Identifiable {
+    case none
+    case daily
+    case weekly
+    case monthly
+    case yearly
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none:
+            return "Không lặp lại"
+        case .daily:
+            return "Hằng ngày"
+        case .weekly:
+            return "Hằng tuần"
+        case .monthly:
+            return "Hằng tháng"
+        case .yearly:
+            return "Hằng năm"
+        }
+    }
+}
+
 enum OCRStatus: String, Codable {
     case pendingReview
     case confirmed

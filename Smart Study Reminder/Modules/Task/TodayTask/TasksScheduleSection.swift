@@ -58,9 +58,59 @@ struct TasksScheduleSection: View {
     private func tasksForDate(_ date: Date) -> [TaskItem] {
         tasks
             .filter { task in
-                calendar.isDate(task.startAt, inSameDayAs: date)
+                taskOccurs(task, on: date)
             }
-            .sorted { $0.startAt < $1.startAt }
+            .sorted { first, second in
+                occurrenceStart(for: first, on: date) < occurrenceStart(for: second, on: date)
+            }
+    }
+    
+    private func taskOccurs(_ task: TaskItem, on date: Date) -> Bool {
+        let targetDay = calendar.startOfDay(for: date)
+        let taskStartDay = calendar.startOfDay(for: task.startAt)
+        
+        guard targetDay >= taskStartDay else {
+            return false
+        }
+        
+        switch task.repeatRule {
+        case .none:
+            return calendar.isDate(task.startAt, inSameDayAs: date)
+            
+        case .daily:
+            return true
+            
+        case .weekly:
+            return calendar.component(.weekday, from: task.startAt) ==
+                   calendar.component(.weekday, from: date)
+            
+        case .monthly:
+            return calendar.component(.day, from: task.startAt) ==
+                   calendar.component(.day, from: date)
+            
+        case .yearly:
+            let taskComponents = calendar.dateComponents([.day, .month], from: task.startAt)
+            let targetComponents = calendar.dateComponents([.day, .month], from: date)
+            
+            return taskComponents.day == targetComponents.day &&
+                   taskComponents.month == targetComponents.month
+        }
+    }
+    
+    private func occurrenceStart(for task: TaskItem, on date: Date) -> Date {
+        let dayComponents = calendar.dateComponents([.year, .month, .day], from: date)
+        let timeComponents = calendar.dateComponents([.hour, .minute, .second], from: task.startAt)
+        
+        return calendar.date(
+            from: DateComponents(
+                year: dayComponents.year,
+                month: dayComponents.month,
+                day: dayComponents.day,
+                hour: timeComponents.hour,
+                minute: timeComponents.minute,
+                second: timeComponents.second
+            )
+        ) ?? task.startAt
     }
     
     private func editTask(_ task: TaskItem) {
@@ -89,9 +139,11 @@ struct TasksScheduleSection: View {
             task.status = .notDone
             task.updatedAt = .now
         }
+        
         if let reminderAt = task.reminderAt, reminderAt > Date() {
             NotificationManager.shared.scheduleTaskReminder(for: task)
         }
+        
         saveContext()
     }
     

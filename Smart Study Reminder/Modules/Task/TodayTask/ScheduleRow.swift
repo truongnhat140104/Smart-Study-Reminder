@@ -10,7 +10,7 @@ struct ScheduleRow: View {
     let detail: String?
     let time: String
     let icon: String
-    let reminder: Date?
+    let reminderOffsetMinutes: Int?
     let isDone: Bool
     let priority: String
     
@@ -58,11 +58,11 @@ struct ScheduleRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 
-                if let reminder {
+                if let reminderOffsetMinutes {
                     HStack(spacing: 5) {
                         Image(systemName: "bell")
                         
-                        Text(reminder.formatted(date: .omitted, time: .shortened))
+                        Text(reminderText(from: reminderOffsetMinutes))
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -76,6 +76,24 @@ struct ScheduleRow: View {
                     .font(.title3)
                     .foregroundStyle(.green)
             }
+        }
+    }
+    private func reminderText(from minutes: Int) -> String {
+        switch minutes {
+        case 0:
+            return "Nhắc đúng giờ"
+        case 1..<60:
+            return "Nhắc trước \(minutes) phút"
+        case 60:
+            return "Nhắc trước 1 giờ"
+        case 61..<1440 where minutes % 60 == 0:
+            return "Nhắc trước \(minutes / 60) giờ"
+        case 1440:
+            return "Nhắc trước 1 ngày"
+        case 1441... where minutes % 1440 == 0:
+            return "Nhắc trước \(minutes / 1440) ngày"
+        default:
+            return "Nhắc trước \(minutes) phút"
         }
     }
 }

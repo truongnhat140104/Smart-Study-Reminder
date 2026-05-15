@@ -283,7 +283,7 @@ struct ChatbotView: View {
         .padding(.horizontal)
         .padding(.vertical, 10)
     }
-    
+
     private var studySlotSelectionView: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -416,12 +416,12 @@ struct ChatbotView: View {
             generateScheduleFromChat()
             return
         }
-        
+
         if isTodayTaskQuestion(text) {
             replyTodayTasks()
             return
         }
-        
+
         if isTodayClassScheduleQuestion(text) {
             replyTodayClassSchedules()
             return
@@ -538,7 +538,7 @@ struct ChatbotView: View {
 
         do {
             let settings = getOrCreateAppSettings()
-            
+
             guard let request = try await studyRequestParser.parse(
                 text,
                 defaultDurationMinutes: settings.preferredStudyDurationMinutes
@@ -578,7 +578,7 @@ struct ChatbotView: View {
             return true
         } catch {
             isSending = false
-            
+
             addMessage(
                 friendlyAPIErrorMessage(from: error),
                 role: .assistant
@@ -639,11 +639,9 @@ struct ChatbotView: View {
         let slot = pendingStudySlots[index]
         let settings = getOrCreateAppSettings()
 
-        let reminderAt = calendar.date(
-            byAdding: .minute,
-            value: -settings.defaultReminderMinutes,
-            to: slot.startAt
-        )
+        let reminderOffsetMinutes = settings.enableNotifications
+            ? settings.defaultReminderMinutes
+            : nil
 
         let task = TaskItem(
             title: "Học \(request.subject)",
@@ -652,14 +650,14 @@ struct ChatbotView: View {
             endAt: slot.endAt,
             status: .notDone,
             priority: .medium,
-            reminderAt: reminderAt,
-            notificationIdentifier: nil
+            reminderOffsetMinutes: reminderOffsetMinutes,
+            notificationIdentifier: nil,
+            repeatRule: .none
         )
 
         modelContext.insert(task)
-        
-        if settings.enableNotifications,
-           let reminderAt,
+
+        if let reminderAt = task.reminderAt,
            reminderAt > Date() {
             NotificationManager.shared.scheduleTaskReminder(for: task)
         }
@@ -730,9 +728,16 @@ struct ChatbotView: View {
 
     private func applyGeneratedSchedule() {
         for result in pendingScheduleResults {
+            NotificationManager.shared.cancelTaskReminder(for: result.task)
+
             result.task.startAt = result.startAt
             result.task.endAt = result.endAt
             result.task.updatedAt = .now
+
+            if let reminderAt = result.task.reminderAt,
+               reminderAt > Date() {
+                NotificationManager.shared.scheduleTaskReminder(for: result.task)
+            }
         }
 
         pendingScheduleResults.removeAll()
@@ -826,10 +831,10 @@ struct ChatbotView: View {
             proxy.scrollTo(lastMessage.id, anchor: .bottom)
         }
     }
-    
+
     private func friendlyAPIErrorMessage(from error: Error) -> String {
         let message = error.localizedDescription.lowercased()
-        
+
         if message.contains("503")
             || message.contains("unavailable")
             || message.contains("high demand")
@@ -837,27 +842,27 @@ struct ChatbotView: View {
             || message.contains("quá tải") {
             return "Hiện tại AI đang quá tải. Bạn thử lại sau vài giây nhé."
         }
-        
+
         if message.contains("429")
             || message.contains("rate limit")
             || message.contains("quota")
             || message.contains("too many requests") {
             return "API đang bị giới hạn lượt gọi. Bạn chờ một lát rồi thử lại nhé."
         }
-        
+
         if message.contains("401")
             || message.contains("unauthorized")
             || message.contains("api key")
             || message.contains("invalid key") {
             return "API key chưa hợp lệ. Bạn kiểm tra lại cấu hình API nhé."
         }
-        
+
         if message.contains("403")
             || message.contains("permission")
             || message.contains("forbidden") {
             return "API key hiện không có quyền dùng model này. Bạn kiểm tra lại model hoặc quyền truy cập API."
         }
-        
+
         if message.contains("network")
             || message.contains("internet")
             || message.contains("offline")
@@ -865,57 +870,57 @@ struct ChatbotView: View {
             || message.contains("cannot connect") {
             return "Kết nối mạng đang không ổn định. Bạn kiểm tra Internet rồi thử lại nhé."
         }
-        
+
         if message.contains("json")
             || message.contains("decode")
             || message.contains("data couldn’t be read")
             || message.contains("định dạng") {
             return "AI đã phản hồi nhưng dữ liệu chưa đúng định dạng. Bạn thử nhập lại rõ hơn nhé."
         }
-        
+
         return "Mình chưa xử lý được yêu cầu này lúc này. Bạn thử lại sau nhé."
     }
-    
+
     private func isTodayTaskQuestion(_ text: String) -> Bool {
         let lowercased = text.lowercased()
-        
+
         let asksToday = lowercased.contains("hôm nay")
             || lowercased.contains("today")
-        
+
         let asksTask = lowercased.contains("công việc")
             || lowercased.contains("việc")
             || lowercased.contains("task")
             || lowercased.contains("deadline")
             || lowercased.contains("lời nhắc")
-        
+
         return asksToday && asksTask
     }
-    
+
     private func isTodayClassScheduleQuestion(_ text: String) -> Bool {
         let lowercased = text.lowercased()
-        
+
         let asksToday = lowercased.contains("hôm nay")
             || lowercased.contains("today")
-        
+
         let asksSchedule = lowercased.contains("lịch học")
             || lowercased.contains("lịch")
             || lowercased.contains("môn")
             || lowercased.contains("học gì")
             || lowercased.contains("phòng")
             || lowercased.contains("lớp")
-        
+
         return asksToday && asksSchedule
     }
-    
+
     private func replyTodayClassSchedules() {
         let todayWeekday = calendar.component(.weekday, from: Date())
-        
+
         let todaySchedules = classSchedules
             .filter { schedule in
                 schedule.weekday == todayWeekday
             }
             .sorted { $0.startTime < $1.startTime }
-        
+
         if todaySchedules.isEmpty {
             addMessage(
                 "Hôm nay bạn không có lịch học.",
@@ -923,26 +928,26 @@ struct ChatbotView: View {
             )
             return
         }
-        
+
         let scheduleText = todaySchedules.enumerated().map { index, schedule in
             let subjectName = schedule.subject.name
             let roomText = schedule.room ?? "Chưa có phòng"
-            
+
             var text = """
             \(index + 1). \(subjectName)
                \(formatTime(schedule.startTime)) - \(formatTime(schedule.endTime))
                Phòng: \(roomText)
             """
-            
+
             if let note = schedule.note,
                !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 text += "\n   Ghi chú: \(note)"
             }
-            
+
             return text
         }
         .joined(separator: "\n\n")
-        
+
         addMessage(
             """
             Hôm nay bạn có \(todaySchedules.count) lịch học:
@@ -952,14 +957,14 @@ struct ChatbotView: View {
             role: .assistant
         )
     }
-    
+
     private func replyTodayTasks() {
         let todayTasks = tasks
             .filter { task in
-                calendar.isDateInToday(task.startAt)
+                taskOccurs(task, on: Date())
             }
             .sorted { $0.startAt < $1.startAt }
-        
+
         if todayTasks.isEmpty {
             addMessage(
                 "Hôm nay bạn chưa có công việc nào.",
@@ -967,25 +972,25 @@ struct ChatbotView: View {
             )
             return
         }
-        
+
         let taskText = todayTasks.enumerated().map { index, task in
             let statusText = task.status == .done ? "Đã hoàn thành" : "Chưa hoàn thành"
-            
+
             var text = """
             \(index + 1). \(task.title)
                \(formatTime(task.startAt)) - \(formatTime(task.endAt))
                Ưu tiên: \(task.priority.title) • \(statusText)
             """
-            
+
             if let detail = task.detail,
                !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 text += "\n   Ghi chú: \(detail)"
             }
-            
+
             return text
         }
         .joined(separator: "\n\n")
-        
+
         addMessage(
             """
             Hôm nay bạn có \(todayTasks.count) công việc:
@@ -994,6 +999,37 @@ struct ChatbotView: View {
             """,
             role: .assistant
         )
+    }
+
+    private func taskOccurs(_ task: TaskItem, on date: Date) -> Bool {
+        let targetDay = calendar.startOfDay(for: date)
+        let taskStartDay = calendar.startOfDay(for: task.startAt)
+
+        guard targetDay >= taskStartDay else {
+            return false
+        }
+
+        switch task.repeatRule {
+        case .none:
+            return calendar.isDate(task.startAt, inSameDayAs: date)
+
+        case .daily:
+            return true
+
+        case .weekly:
+            return calendar.component(.weekday, from: task.startAt) ==
+                   calendar.component(.weekday, from: date)
+
+        case .monthly:
+            return calendar.component(.day, from: task.startAt) ==
+                   calendar.component(.day, from: date)
+
+        case .yearly:
+            return calendar.component(.day, from: task.startAt) ==
+                   calendar.component(.day, from: date)
+                && calendar.component(.month, from: task.startAt) ==
+                   calendar.component(.month, from: date)
+        }
     }
 
     private func formatTime(_ date: Date) -> String {
@@ -1017,5 +1053,5 @@ struct ChatbotView: View {
 
 #Preview {
     ChatbotView()
-        .modelContainer(for: AppModelContainer.models)
+        .modelContainer(for: AppModelContainer.models, inMemory: true)
 }

@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 
+
+
 @Model
 final class TaskItem {
     @Attribute(.unique)
@@ -15,8 +17,13 @@ final class TaskItem {
     var status: TaskStatus
     var priority: TaskPriority
 
-    var reminderAt: Date?
+    var reminderOffsetMinutes: Int?
     var notificationIdentifier: String?
+    
+    var repeatRule: TaskRepeatRule
+
+    var earlyReminderOffsetMinutes: Int?
+    var earlyNotificationIdentifier: String?
 
     var createdAt: Date
     var updatedAt: Date
@@ -31,8 +38,11 @@ final class TaskItem {
         endAt: Date,
         status: TaskStatus = .notDone,
         priority: TaskPriority = .medium,
-        reminderAt: Date? = nil,
+        reminderOffsetMinutes: Int? = nil,
         notificationIdentifier: String? = nil,
+        repeatRule: TaskRepeatRule = .none,
+        earlyReminderOffsetMinutes: Int? = nil,
+        earlyNotificationIdentifier: String? = nil,
         tags: [Tag] = [],
         createdAt: Date = .now,
         updatedAt: Date = .now
@@ -44,8 +54,11 @@ final class TaskItem {
         self.endAt = endAt
         self.status = status
         self.priority = priority
-        self.reminderAt = reminderAt
+        self.reminderOffsetMinutes = reminderOffsetMinutes
         self.notificationIdentifier = notificationIdentifier
+        self.repeatRule = repeatRule
+        self.earlyReminderOffsetMinutes = earlyReminderOffsetMinutes
+        self.earlyNotificationIdentifier = earlyNotificationIdentifier
         self.tags = tags
         self.createdAt = createdAt
         self.updatedAt = updatedAt
